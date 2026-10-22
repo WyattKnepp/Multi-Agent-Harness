@@ -35,7 +35,8 @@ async function withLock(idea, res, fn) {
     await fn();
   } catch (e) {
     console.error(`[${idea.id}]`, e.message);
-    res.status(502).json({ error: e.message });
+    // 500, not 502: proxies like Cloudflare may swap a 502 for their own page.
+    res.status(500).json({ error: e.message });
   } finally {
     busy.delete(idea.id);
   }
