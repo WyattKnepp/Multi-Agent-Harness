@@ -212,6 +212,11 @@ systemctl --user restart idea-dispatcher    # restart it
 - **Grilling errors**: `claude` on the server isn't logged in, or isn't on
   `APP_USER`'s PATH. Check the logs with `pm2 logs <PM2_NAME>`, run as
   `APP_USER`.
+- **"Invalid API key · Fix external API key"**: an `ANTHROPIC_API_KEY` is
+  set for the app (for example in the server's hand-made `.env`), and Claude
+  uses it instead of the login. Remove it, then restart the app *as
+  `APP_USER`*. Root has its own separate pm2, so `pm2 restart` run as root
+  doesn't touch the app.
 - **Tab opened but Claude is idle**: it's probably waiting at the "trust this
   folder?" prompt. Answer it in herdr.
 
