@@ -1,0 +1,14 @@
+{
+  "name": "idea-pipeline",
+  "version": "1.0.0",
+  "description": "Capture ideas, get grilled on them by Claude, dispatch the result to Claude Code",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
