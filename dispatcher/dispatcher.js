@@ -40,6 +40,10 @@ const POLL_MS = (Number(env.POLL_SECONDS) || 15) * 1000;
 const PROJECT_SYNC_MS = 10 * 60 * 1000;
 const HERDR = env.HERDR_BIN || 'herdr';
 const HERDR_SESSION = env.HERDR_SESSION ? ['--session', env.HERDR_SESSION] : [];
+// herdr reads HERDR_SESSION itself and rejects an empty one (which is what a
+// blank line in .env gives us). The session is passed explicitly above, so
+// keep the variable away from herdr.
+const { HERDR_SESSION: _unused, ...HERDR_ENV } = env;
 const CLAUDE_ARGS = (env.CLAUDE_ARGS || '').split(/\s+/).filter(Boolean);
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -62,7 +66,7 @@ async function api(method, route, body) {
 
 function herdr(args) {
   return new Promise((resolve, reject) => {
-    execFile(HERDR, [...HERDR_SESSION, ...args], { maxBuffer: 16 << 20 }, (err, stdout, stderr) => {
+    execFile(HERDR, [...HERDR_SESSION, ...args], { maxBuffer: 16 << 20, env: HERDR_ENV }, (err, stdout, stderr) => {
       // Success JSON goes to stdout; error JSON (non-zero exit) to stderr.
       let out;
       try { out = JSON.parse(stdout.trim() || stderr); } catch {
@@ -87,7 +91,7 @@ async function ensureHerdr() {
     if (e.code !== 'server_not_running') throw e;
   }
   log('herdr server not running; starting it headless');
-  spawn(HERDR, [...HERDR_SESSION, 'server'], { detached: true, stdio: 'ignore' }).unref();
+  spawn(HERDR, [...HERDR_SESSION, 'server'], { detached: true, stdio: 'ignore', env: HERDR_ENV }).unref();
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 500));
     try { return await herdr(['workspace', 'list']); } catch {}
