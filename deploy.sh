@@ -13,10 +13,13 @@ done
 PORT="${PORT:-3006}"
 PM2_NAME="${PM2_NAME:-idea-pipeline}"
 key="${DROPLET_KEY/#\~/$HOME}"
-ssh_=(ssh -i "$key" "$DROPLET")
+# One shared SSH connection for every step, so servers that rate-limit SSH
+# (e.g. ufw "limit") don't refuse the later ones.
+ssh_opts="-i $key -o ControlMaster=auto -o ControlPath=/tmp/deploy-ssh-%C -o ControlPersist=60"
+ssh_=(ssh $ssh_opts "$DROPLET")
 
 "${ssh_[@]}" "mkdir -p '$APP_DIR'"
-rsync -az --delete -e "ssh -i $key" \
+rsync -az --delete -e "ssh $ssh_opts" \
   --exclude node_modules --exclude data --exclude .env --exclude config.env \
   "$here/server/" "$DROPLET:$APP_DIR/"
 
