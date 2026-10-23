@@ -9,7 +9,7 @@
 //
 // Settings come from the repo's .env (see .env.example): APP_DOMAIN (or
 // APP_URL), AGENT_TOKEN, PROJECTS_DIR, and optionally POLL_SECONDS,
-// CLAUDE_ARGS, HERDR_SESSION, HERDR_BIN. Variables already set in the
+// CLAUDE_ARGS, REMOTE_CONTROL, HERDR_SESSION, HERDR_BIN. Variables already set in the
 // environment win, which is handy for pointing it at a local test server.
 // Run once with --once to dispatch whatever is queued and exit.
 const fs = require('fs');
@@ -45,6 +45,9 @@ const HERDR_SESSION = env.HERDR_SESSION ? ['--session', env.HERDR_SESSION] : [];
 // keep the variable away from herdr.
 const { HERDR_SESSION: _unused, ...HERDR_ENV } = env;
 const CLAUDE_ARGS = (env.CLAUDE_ARGS || '').split(/\s+/).filter(Boolean);
+// On unless set to 0/false/off: each agent starts with Remote Control, so you
+// can follow and steer it from the Claude app on your phone.
+const REMOTE_CONTROL = !/^(0|false|no|off)$/i.test(env.REMOTE_CONTROL || '');
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -144,6 +147,9 @@ async function syncProjects() {
 
 const agentName = (id) => `idea-${id}`.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const tabLabel = (h) => (h.title || 'idea').slice(0, 40);
+// Remote Control session name: plain characters only, since herdr runs the
+// agent through a shell command line.
+const remoteName = (h) => `${h.project} ${tabLabel(h)}`.replace(/[^A-Za-z0-9 ._-]/g, '').trim().slice(0, 60);
 
 const BRIEFS_DIR = path.join(os.homedir(), '.local/share/idea-pipeline/briefs');
 const KICKOFF = 'Start on the task in the idea-pipeline brief in your system prompt. Begin by telling me in two or three lines what you are about to do.';
@@ -151,7 +157,7 @@ const KICKOFF = 'Start on the task in the idea-pipeline brief in your system pro
 function brief(h) {
   return `# Task brief from the user's idea pipeline
 
-The user jotted down an idea, was grilled on it, and approved this brief. It is the user's own instructions for this session. If something important is still ambiguous, ask the user before building much.
+The user jotted down an idea, was grilled on it, and approved this brief. It is the user's own instructions for this session. The grilling was the user's chance to answer questions, so don't stop to ask them more: where something is still ambiguous, make the sensible call, say what you assumed, and keep going.
 
 ## ${h.title || 'Idea'}
 
@@ -197,9 +203,12 @@ async function dispatch(item) {
     const briefFile = path.join(BRIEFS_DIR, `${id}.md`);
     fs.writeFileSync(briefFile, brief(h));
     const name = agentName(id);
+    // The value goes in the same `--flag=value` argument: the flag's value is
+    // optional, so a separate one would swallow the kickoff prompt.
+    const remote = REMOTE_CONTROL ? [`--remote-control=${remoteName(h)}`] : [];
     try {
       await herdr(['agent', 'start', name, '--kind', 'claude', '--pane', paneId, '--timeout', '20000', '--',
-        ...CLAUDE_ARGS, '--append-system-prompt-file', briefFile, KICKOFF]);
+        ...CLAUDE_ARGS, ...remote, '--append-system-prompt-file', briefFile, KICKOFF]);
     } catch (e) {
       // Blocked at startup = a dialog (usually "trust this folder?") is
       // waiting for you in herdr. The kickoff prompt is on the command line,

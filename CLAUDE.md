@@ -17,7 +17,9 @@ laptop: dispatcher/dispatcher.js (systemd user service)
 
 `inbox` → (Grill me) `grilling` → (Write handoff) `review` → (Send) `ready`
 → dispatcher claims it: `dispatching` → `dispatched` | `failed`. `archived`
-is a side state. A failed idea can be edited and sent again.
+is a side state. A failed idea can be edited and sent again. Cancel grill
+kills any running `claude -p` and resets the idea to a fresh `inbox`; only
+`inbox` and `archived` ideas can be deleted (hard delete, 409 otherwise).
 
 ## server/ (runs on the droplet)
 
@@ -33,6 +35,17 @@ is a side state. A failed idea can be edited and sent again.
   (`Read,Glob,Grep`) so it reads up on relevant projects before asking.
   `--strict-mcp-config` keeps claude.ai connectors out of the session (they
   otherwise leak "connector needs auth" chatter into replies).
+- Grilling turns are structured (`--json-schema`): `{comment, questions:
+  [{id, text, type: single|multi, options}], done}`, stored on the message as
+  `text`, `questions`, `done`. A turn that doesn't parse (and every turn from
+  before this) is plain `text` and gets the free-text reply. The handoff call
+  passes no schema. The griller is told the dispatched agent can't ask the
+  user anything, so it settles every open decision in the grill.
+- Elaborate (`POST /api/ideas/:id/elaborate {qid}`) resumes the session with
+  `--fork-session --no-session-persistence`: it sees the whole thread but
+  adds nothing to it and doesn't take the idea's lock. Its explanation lives
+  only in the browser (with the turn's answers in localStorage `turn:<id>`)
+  and is dropped once the turn is answered.
 - `store.js`: `data/ideas.json`, `data/projects.json` and `data/context/`
   (rewritten on every project sync; files for removed projects are deleted).
 - `public/`: plain HTML/CSS/JS with no build step. Mobile-first. Hash routes
@@ -49,7 +62,7 @@ Local dev: `cd server && npm install && AGENT_TOKEN=x PORT=3906 node server.js`
 
 - Config: the repo-root `.env`, loaded with `process.loadEnvFile`
   (`APP_DOMAIN` or `APP_URL`, `AGENT_TOKEN`, `PROJECTS_DIR`, `POLL_SECONDS`,
-  `CLAUDE_ARGS`, `HERDR_SESSION`, `HERDR_BIN`). Real env vars win, so for
+  `CLAUDE_ARGS`, `REMOTE_CONTROL`, `HERDR_SESSION`, `HERDR_BIN`). Real env vars win, so for
   testing: `APP_URL=http://localhost:3906 node dispatcher/dispatcher.js --once`.
 - Every 10 min (and on start) it PUTs the folders in `PROJECTS_DIR` to
   `/agent/projects`, each with a one-line description and its CLAUDE.md
@@ -57,7 +70,10 @@ Local dev: `cd server && npm install && AGENT_TOKEN=x PORT=3906 node server.js`
   project's context. Restart the service to push a CLAUDE.md edit right away.
 - Dispatch: claim → mkdir if `isNew` → start herdr headless if it's not
   running → reuse the workspace whose label is the project name, or create one
-  → new tab → `herdr agent start idea-<id> --kind claude -- --append-system-prompt-file <brief> "<kickoff>"`.
+  → new tab → `herdr agent start idea-<id> --kind claude -- --remote-control=<name> --append-system-prompt-file <brief> "<kickoff>"`.
+  Remote Control (on unless `REMOTE_CONTROL=0`) lets you follow the agent from
+  the Claude app. It must be `--remote-control=<name>` in one argument: the
+  value is optional, so a separate argument would swallow the kickoff.
 - `install.sh <server-url>` writes the config and a systemd user unit
   (`idea-dispatcher.service`, `KillMode=process` so a herdr server it started
   survives restarts). Logs: `journalctl --user -u idea-dispatcher -f`.

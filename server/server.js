@@ -20,7 +20,12 @@ app.use(express.json({ limit: '20mb' })); // big enough for the project CLAUDE.m
 app.use(express.static(path.join(__dirname, 'public')));
 
 // One grilling call at a time per idea, so double-taps can't fork the session.
-const busy = new Set();
+// Maps idea id → a token for the call holding the lock.
+const busy = new Map();
+// Bumped when a grill is cancelled (or the idea deleted). A call that started
+// in an older epoch must not save anything, even if Claude already answered.
+const epochs = new Map();
+const epoch = (id) => epochs.get(id) || 0;
 
 function mustGet(req, res) {
   const idea = store.get(req.params.id);
@@ -30,16 +35,30 @@ function mustGet(req, res) {
 
 async function withLock(idea, res, fn) {
   if (busy.has(idea.id)) return res.status(409).json({ error: 'Claude is still thinking about this one' });
-  busy.add(idea.id);
+  const token = {};
+  busy.set(idea.id, token);
+  const started = epoch(idea.id);
+  // fn calls this after its await, before touching the store.
+  const stillWanted = () => { if (epoch(idea.id) !== started) throw new grill.Cancelled(); };
   try {
-    await fn();
+    await fn(stillWanted);
   } catch (e) {
+    if (e.cancelled) return res.status(409).json({ error: e.message, cancelled: true });
     console.error(`[${idea.id}]`, e.message);
     // 500, not 502: proxies like Cloudflare may swap a 502 for their own page.
     res.status(500).json({ error: e.message });
   } finally {
-    busy.delete(idea.id);
+    // A cancel may already have released the lock and a new call taken it.
+    if (busy.get(idea.id) === token) busy.delete(idea.id);
   }
+}
+
+// Stop whatever grilling call is running for an idea: anything it returns
+// later is dropped, and its claude process is killed.
+async function stopGrill(id) {
+  epochs.set(id, epoch(id) + 1);
+  busy.delete(id);
+  await grill.cancel(id);
 }
 
 const view = (idea) => ({ ...idea, busy: busy.has(idea.id) });
@@ -70,8 +89,28 @@ app.patch('/api/ideas/:id', (req, res) => {
   res.json(view(store.update(idea.id, patch)));
 });
 
-app.delete('/api/ideas/:id', (req, res) => {
-  res.json({ ok: store.remove(req.params.id) });
+// Hard delete. Only for ideas that were never grilled (inbox) or were already
+// put away (archived); anything in flight has to be cancelled or archived first.
+app.delete('/api/ideas/:id', async (req, res) => {
+  const idea = mustGet(req, res);
+  if (!idea) return;
+  if (idea.status !== 'inbox' && idea.status !== 'archived') return res.status(409).json({ error: `Can't delete an idea that is ${idea.status}` });
+  await stopGrill(idea.id);
+  store.remove(idea.id);
+  res.json({ ok: true });
+});
+
+// Abandon the grilling: kill any running turn, forget the session and the
+// transcript, and put the idea back in the inbox with its text untouched.
+// An inbox idea counts while its first turn is still running.
+app.post('/api/ideas/:id/cancel-grill', async (req, res) => {
+  const idea = mustGet(req, res);
+  if (!idea) return;
+  if (idea.status !== 'grilling' && !(idea.status === 'inbox' && busy.has(idea.id))) {
+    return res.status(409).json({ error: `Can't cancel grilling on an idea that is ${idea.status}` });
+  }
+  await stopGrill(idea.id);
+  res.json(view(store.update(idea.id, { status: 'inbox', grillSession: null, messages: [], handoff: null })));
 });
 
 // Send a grilling message. With no message on a fresh idea, it starts the
@@ -86,17 +125,47 @@ app.post('/api/ideas/:id/grill', async (req, res) => {
     ? `Here's my idea:\n\n${idea.text}${typed ? `\n\n${typed}` : ''}`
     : typed;
 
-  await withLock(idea, res, async () => {
-    const { session, reply } = await grill.turn({
+  await withLock(idea, res, async (stillWanted) => {
+    const { session, reply, questions, done } = await grill.turn({
+      key: idea.id,
       session: idea.grillSession,
       message,
       projects: store.projects().projects,
+      structured: true,
     });
+    stillWanted();
     const messages = [...idea.messages];
     if (!first || typed) messages.push({ role: 'me', text: typed || message, at: store.now() });
-    messages.push({ role: 'claude', text: reply, at: store.now() });
+    // Structured turns carry questions (and maybe done); a turn that couldn't
+    // be parsed, like every turn from before this format, is just text.
+    const msg = { role: 'claude', text: reply, at: store.now() };
+    if (questions) Object.assign(msg, { questions, done });
+    messages.push(msg);
     res.json(view(store.update(idea.id, { grillSession: session, messages, status: 'grilling' })));
   });
+});
+
+// Explain one of the latest turn's questions. A side call on a fork of the
+// session: it doesn't take the idea's lock, isn't saved, and doesn't count as
+// an answer. The client keeps the explanation until the turn is answered.
+app.post('/api/ideas/:id/elaborate', async (req, res) => {
+  const idea = mustGet(req, res);
+  if (!idea) return;
+  if (!idea.grillSession) return res.status(400).json({ error: 'Grill it first' });
+  if (busy.has(idea.id)) return res.status(409).json({ error: 'Claude is still thinking about this one' });
+  const last = idea.messages[idea.messages.length - 1];
+  const question = last?.role === 'claude' && last.questions?.find((q) => q.id === req.body.qid);
+  if (!question) return res.status(404).json({ error: 'That question is no longer open' });
+  const started = epoch(idea.id);
+  try {
+    const text = await grill.elaborate({ key: idea.id, session: idea.grillSession, question, projects: store.projects().projects });
+    if (epoch(idea.id) !== started) throw new grill.Cancelled();
+    res.json({ text: text || 'Claude had nothing to add.' });
+  } catch (e) {
+    if (e.cancelled) return res.status(409).json({ error: e.message, cancelled: true });
+    console.error(`[${idea.id}] elaborate:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // End the grilling: Claude writes the brief and suggests a project.
@@ -104,8 +173,9 @@ app.post('/api/ideas/:id/handoff', async (req, res) => {
   const idea = mustGet(req, res);
   if (!idea) return;
   if (!idea.grillSession) return res.status(400).json({ error: 'Grill it first' });
-  await withLock(idea, res, async () => {
-    const handoff = await grill.handoff({ session: idea.grillSession, projects: store.projects().projects });
+  await withLock(idea, res, async (stillWanted) => {
+    const handoff = await grill.handoff({ key: idea.id, session: idea.grillSession, projects: store.projects().projects });
+    stillWanted();
     res.json(view(store.update(idea.id, { handoff, status: 'review' })));
   });
 });

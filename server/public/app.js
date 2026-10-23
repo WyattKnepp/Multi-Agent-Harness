@@ -69,7 +69,7 @@ async function api(method, url, body) {
     throw new Error('signed out');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(data.cancelled ? 'cancelled' : data.error || `HTTP ${res.status}`);
   return data;
 }
 function showBanner(text) { $banner.textContent = text; $banner.hidden = false; }
@@ -160,11 +160,83 @@ function card(i) {
   </a>`;
 }
 
+// ---------- grilling turns ----------
+// A structured griller turn is { text (commentary), questions: [{ id, text,
+// type: 'single'|'multi', options }], done }. Older turns, and turns Claude
+// didn't format properly, have only text and get the plain free-text reply.
+// Answers for the open turn live in localStorage (keyed to the turn's time),
+// so a reload doesn't lose them: { at, a: { qid: { sel: [option index],
+// other: bool, text } }, elab: { qid: explanation } }.
+
+function openTurn(i) {
+  const last = i.messages[i.messages.length - 1];
+  return last?.role === 'claude' && last.questions?.length ? last : null;
+}
+
+function loadTurn(i, m) {
+  let t = null;
+  try { t = JSON.parse(load('turn:' + i.id)); } catch {}
+  return t && t.at === m.at ? t : { at: m.at, a: {}, elab: {} };
+}
+const saveTurn = (i, t) => store('turn:' + i.id, JSON.stringify(t));
+const answerOf = (t, q) => t.a[q.id] || (t.a[q.id] = { sel: [], other: false, text: '' });
+const isAnswered = (a) => !!a && (a.sel.length > 0 || (a.other && a.text.trim() !== ''));
+
+// The user turn sent to Claude and shown in the transcript: each question,
+// then "→ " and the picks.
+function serializeAnswers(m, t) {
+  return m.questions.map((q) => {
+    const a = answerOf(t, q);
+    const picks = [...a.sel].sort((x, y) => x - y).map((n) => q.options[n]);
+    if (a.other && a.text.trim()) picks.push(`Other: ${a.text.trim()}`);
+    return `${q.text}\n→ ${picks.join('; ')}`;
+  }).join('\n\n');
+}
+
+// Elaborate calls in flight, as "<idea>:<turn at>:<question id>".
+const elabPending = new Set();
+
+function questionHtml(i, m, t, q) {
+  const a = answerOf(t, q);
+  const multi = q.type === 'multi';
+  const opt = (key, label, on) => `<button type="button" class="opt" role="${multi ? 'checkbox' : 'radio'}" aria-checked="${on}" data-opt="${key}"><span class="mark" aria-hidden="true"></span><span class="label">${esc(label)}</span></button>`;
+  const pending = elabPending.has(`${i.id}:${m.at}:${q.id}`);
+  const elab = t.elab[q.id];
+  return `<div class="q ${multi ? 'multi' : 'single'}" data-q="${esc(q.id)}" role="group" aria-labelledby="qt-${esc(q.id)}">
+    <div class="q-text" id="qt-${esc(q.id)}">${md(q.text)}</div>
+    <div class="q-meta">
+      <span class="q-kind">${multi ? 'Pick any that apply' : 'Pick one'}</span>
+      <button type="button" class="elab-btn" data-elab ${pending || elab ? 'disabled' : ''}>${pending ? 'Explaining…' : elab ? 'Explained' : 'Elaborate'}</button>
+    </div>
+    <div class="elab" ${elab ? '' : 'hidden'}>${elab ? md(elab) : ''}</div>
+    <div class="opts" role="${multi ? 'group' : 'radiogroup'}">
+      ${q.options.map((o, n) => opt(n, o, a.sel.includes(n))).join('')}
+      ${opt('other', 'Other…', a.other)}
+      <textarea class="other-text" rows="1" placeholder="Your answer" ${a.other ? '' : 'hidden'}>${esc(a.text)}</textarea>
+    </div>
+  </div>`;
+}
+
+// A past structured turn in the transcript: its commentary and questions.
+function pastTurnHtml(m) {
+  return `${m.text ? md(m.text) : ''}${m.questions?.length ? `<ol class="q-past">${m.questions.map((q) => `<li>${esc(q.text)}<div class="opts-past">${q.options.map(esc).join(' · ')}</div></li>`).join('')}</ol>` : ''}`;
+}
+
+// The user's answers: question lines as-is, "→ " lines in bold.
+const answersHtml = (text) => esc(text).replace(/^→ (.*)$/gm, '<strong>$1</strong>');
+
 // ---------- idea view ----------
 
 function renderIdea() {
   const i = state.current;
   const canChat = ['inbox', 'grilling', 'review', 'failed'].includes(i.status) && i.grillSession;
+  const turnMsg = canChat && !i.busy ? openTurn(i) : null;
+  const turn = turnMsg && loadTurn(i, turnMsg);
+  const last = i.messages[i.messages.length - 1];
+  const done = canChat && !i.busy && last?.role === 'claude' && last.done;
+  // The first turn runs while the idea is still in the inbox.
+  const canCancel = i.status === 'grilling' || (i.status === 'inbox' && i.busy);
+  const canDelete = i.status === 'archived' || (i.status === 'inbox' && !i.busy);
   const draft = load('draft:' + i.id) || '';
 
   $app.innerHTML = `
@@ -179,9 +251,15 @@ function renderIdea() {
 
     ${i.messages.length || i.busy ? `<div class="section-label">Grilling</div>` : ''}
     <div class="thread">
-      ${i.messages.map((m) => `<div class="msg ${m.role}">${m.role === 'claude' ? md(m.text) : esc(m.text)}</div>`).join('')}
+      ${i.messages.map((m) => m.role === 'me'
+        ? `<div class="msg me">${answersHtml(m.text)}</div>`
+        : m === turnMsg
+          ? (m.text ? `<div class="msg claude">${md(m.text)}</div>` : '')
+          : `<div class="msg claude">${m.questions ? pastTurnHtml(m) : md(m.text)}</div>`).join('')}
       ${i.busy ? `<div class="thinking">Claude is thinking</div>` : ''}
     </div>
+
+    ${turnMsg ? `<div class="questions" id="questions">${turnMsg.questions.map((q) => questionHtml(i, turnMsg, turn, q)).join('')}</div>` : ''}
 
     ${!i.grillSession && i.status !== 'archived' ? `
       <div class="section-label">Ready when you are</div>
@@ -194,19 +272,28 @@ function renderIdea() {
 
     ${canChat ? `
       <div class="composer">
-        <textarea id="reply" rows="2" placeholder="Answer…" ${i.busy ? 'disabled' : ''}>${esc(draft)}</textarea>
+        ${done ? `<div class="note ok composer-note">Claude has enough. Tap Write handoff.</div>` : ''}
+        <textarea id="reply" rows="${turnMsg ? 1 : 2}" placeholder="${turnMsg ? 'Add a note, or reply in your own words…' : 'Answer…'}" ${i.busy ? 'disabled' : ''}>${esc(draft)}</textarea>
+        ${turnMsg ? `<div class="note composer-note" id="send-hint"></div>` : ''}
         <div class="row" style="margin-top:8px">
-          ${i.messages.length ? `<button class="btn" data-act="handoff" ${i.busy ? 'disabled' : ''}>${i.handoff ? 'Rewrite handoff' : 'Write handoff'}</button>` : ''}
+          ${i.messages.length ? `<button class="btn ${done ? 'primary' : ''}" data-act="handoff" ${i.busy ? 'disabled' : ''}>${i.handoff ? 'Rewrite handoff' : 'Write handoff'}</button>` : ''}
           <span class="grow"></span>
-          <button class="btn primary" data-act="reply" ${i.busy ? 'disabled' : ''}>Send</button>
+          <button class="btn ${done ? '' : 'primary'}" data-act="reply" ${i.busy ? 'disabled' : ''}>Send</button>
         </div>
       </div>` : ''}
 
-    ${i.status === 'archived' ? `<div class="row end" style="margin-top:16px"><button class="btn danger" data-act="delete">Delete forever</button></div>` : ''}
+    ${canCancel || canDelete ? `<div class="row end" style="margin-top:16px">
+      ${canCancel ? `<button class="btn danger" data-act="cancel-grill">Cancel grilling</button>` : ''}
+      ${canDelete ? `<button class="btn danger" data-act="delete">${i.status === 'archived' ? 'Delete forever' : 'Delete idea'}</button>` : ''}
+    </div>` : ''}
   `;
 
-  bindIdea(i);
-  if (i.messages.length && canChat) window.scrollTo(0, document.body.scrollHeight);
+  bindIdea(i, turnMsg, turn);
+  if (turnMsg) {
+    // Start reading at the top of the latest turn, not under its questions.
+    const bubbles = $app.querySelectorAll('.msg');
+    (turnMsg.text ? bubbles[bubbles.length - 1] : document.getElementById('questions')).scrollIntoView({ block: 'start' });
+  } else if (i.messages.length && canChat) window.scrollTo(0, document.body.scrollHeight);
 }
 
 function handoffPanel(i) {
@@ -243,10 +330,10 @@ function handoffPanel(i) {
     </div>`;
 }
 
-function bindIdea(i) {
+function bindIdea(i, turnMsg, turn) {
   const on = (act, fn) => $app.querySelectorAll(`[data-act="${act}"]`).forEach((b) => (b.onclick = fn));
   const run = async (fn) => {
-    try { await fn(); } catch (e) { if (e.message !== 'offline' && e.message !== 'signed out') toast(e.message); }
+    try { await fn(); } catch (e) { if (!['offline', 'signed out', 'cancelled'].includes(e.message)) toast(e.message); }
     render();
   };
   // Grilling calls take a while; show "thinking" right away and let polling
@@ -257,17 +344,40 @@ function bindIdea(i) {
     return run(async () => {
       await api('POST', url, body);
       store('draft:' + i.id, null);
+      if (url.endsWith('/grill')) store('turn:' + i.id, null);
     });
   };
 
   const extra = document.getElementById('grill-extra');
   const reply = document.getElementById('reply');
-  for (const ta of [extra, reply]) if (ta) ta.oninput = () => store('draft:' + i.id, ta.value || null);
-  if (reply) reply.onkeydown = (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $app.querySelector('[data-act="reply"]').click(); };
+  const sendBtn = $app.querySelector('[data-act="reply"]');
+  for (const ta of [extra, reply]) if (ta) ta.addEventListener('input', () => store('draft:' + i.id, ta.value || null));
+  if (reply) reply.onkeydown = (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendBtn.click(); };
+
+  // With an open turn, Send needs every question answered, or (to skip the
+  // options entirely) no answers and a typed reply.
+  const answeredCount = () => turnMsg.questions.filter((q) => isAnswered(turn.a[q.id])).length;
+  const updateSend = () => {
+    if (!turnMsg || !sendBtn) return;
+    const n = answeredCount();
+    const total = turnMsg.questions.length;
+    const typed = reply.value.trim() !== '';
+    sendBtn.disabled = !(n === total || (n === 0 && typed));
+    document.getElementById('send-hint').textContent =
+      n === total ? '' : n > 0 ? `Answer every question to send (${n} of ${total})` : typed ? '' : 'Tap your answers above, or type a reply';
+  };
+  if (reply) reply.addEventListener('input', updateSend);
+  if (turnMsg) bindQuestions(i, turnMsg, turn, updateSend);
+  updateSend();
 
   on('start', () => grillCall(`/api/ideas/${i.id}/grill`, { message: extra?.value || '' }));
   on('reply', () => {
-    const message = reply.value.trim();
+    const typed = reply.value.trim();
+    let message = typed;
+    if (turnMsg && answeredCount() > 0) {
+      if (answeredCount() < turnMsg.questions.length) return;
+      message = serializeAnswers(turnMsg, turn) + (typed ? '\n\n' + typed : '');
+    }
     if (!message) return;
     state.current.messages.push({ role: 'me', text: message });
     grillCall(`/api/ideas/${i.id}/grill`, { message });
@@ -285,9 +395,22 @@ function bindIdea(i) {
   on('unsend', () => run(() => api('POST', `/api/ideas/${i.id}/unsend`)));
   on('archive', () => run(async () => { await api('PATCH', `/api/ideas/${i.id}`, { archived: true }); location.hash = '#/'; }));
   on('unarchive', () => run(() => api('PATCH', `/api/ideas/${i.id}`, { archived: false })));
+  on('cancel-grill', () => {
+    if (!confirm('Cancel grilling? The conversation will be discarded.')) return;
+    run(async () => {
+      await api('POST', `/api/ideas/${i.id}/cancel-grill`);
+      store('draft:' + i.id, null); // an answer to a discarded question
+      store('turn:' + i.id, null);
+    });
+  });
   on('delete', () => {
-    if (!confirm('Delete this idea and its grilling for good?')) return;
-    run(async () => { await api('DELETE', `/api/ideas/${i.id}`); location.hash = '#/'; });
+    if (!confirm(i.status === 'archived' ? 'Delete this idea and its grilling for good?' : "Delete this idea? This can't be undone.")) return;
+    run(async () => {
+      await api('DELETE', `/api/ideas/${i.id}`);
+      store('draft:' + i.id, null);
+      store('turn:' + i.id, null);
+      location.hash = '#/';
+    });
   });
 
   const sel = document.getElementById('h-project');
@@ -306,6 +429,83 @@ function bindIdea(i) {
       if (ta.value.trim() && ta.value !== i.text) await api('PATCH', `/api/ideas/${i.id}`, { text: ta.value });
     });
   };
+}
+
+// Taps and typing on the open turn's questions. These update the DOM in place
+// rather than re-rendering, so focus and scroll position stay put.
+function bindQuestions(i, m, t, changed) {
+  state.turn = t;
+  for (const el of document.querySelectorAll('#questions .q')) {
+    const q = m.questions.find((x) => x.id === el.dataset.q);
+    const a = answerOf(t, q);
+    const other = el.querySelector('.other-text');
+    const paint = () => {
+      el.querySelectorAll('.opt').forEach((b) => {
+        const on = b.dataset.opt === 'other' ? a.other : a.sel.includes(Number(b.dataset.opt));
+        b.setAttribute('aria-checked', String(on));
+      });
+      other.hidden = !a.other;
+      el.classList.toggle('answered', isAnswered(a));
+    };
+    el.querySelectorAll('.opt').forEach((b) => (b.onclick = () => {
+      const key = b.dataset.opt;
+      if (key === 'other') {
+        a.other = !a.other;
+        if (a.other && q.type === 'single') a.sel = [];
+      } else {
+        const n = Number(key);
+        const on = a.sel.includes(n);
+        if (q.type === 'single') { a.sel = on ? [] : [n]; a.other = false; }
+        else a.sel = on ? a.sel.filter((x) => x !== n) : [...a.sel, n];
+      }
+      saveTurn(i, t);
+      paint();
+      if (key === 'other' && a.other) other.focus();
+      changed();
+    }));
+    other.oninput = () => {
+      a.text = other.value;
+      other.style.height = 'auto';
+      other.style.height = other.scrollHeight + 'px';
+      saveTurn(i, t);
+      el.classList.toggle('answered', isAnswered(a));
+      changed();
+    };
+    paint();
+
+    // Elaborate: a side call that doesn't touch the answers. The result is
+    // saved into whatever the stored turn is by then, and shown if this
+    // question is still on screen.
+    const btn = el.querySelector('[data-elab]');
+    btn.onclick = async () => {
+      const key = `${i.id}:${m.at}:${q.id}`;
+      elabPending.add(key);
+      btn.disabled = true;
+      btn.textContent = 'Explaining…';
+      try {
+        const { text } = await api('POST', `/api/ideas/${i.id}/elaborate`, { qid: q.id });
+        // A re-render since the tap made a new turn object; update that one.
+        const live = state.current?.id === i.id && state.turn?.at === m.at ? state.turn : loadTurn(i, m);
+        live.elab[q.id] = text;
+        saveTurn(i, live);
+        const shown = state.current?.id === i.id && openTurn(state.current)?.at === m.at
+          && [...document.querySelectorAll('#questions .q')].find((x) => x.dataset.q === q.id);
+        if (shown) {
+          const box = shown.querySelector('.elab');
+          box.innerHTML = md(text);
+          box.hidden = false;
+          shown.querySelector('[data-elab]').textContent = 'Explained';
+        }
+      } catch (e) {
+        if (!['offline', 'signed out', 'cancelled'].includes(e.message)) toast(e.message);
+        const live = [...document.querySelectorAll('#questions .q')].find((x) => x.dataset.q === q.id);
+        const b = live?.querySelector('[data-elab]');
+        if (b) { b.disabled = false; b.textContent = 'Elaborate'; }
+      } finally {
+        elabPending.delete(key);
+      }
+    };
+  }
 }
 
 // ---------- polling ----------

@@ -139,6 +139,7 @@ openssl rand -hex 32        # paste the output in as AGENT_TOKEN
 | `PROJECTS_DIR` | dispatcher | Laptop folder holding your projects. New projects are created here |
 | `POLL_SECONDS` | dispatcher | How often to check for sent ideas (default `15`) |
 | `CLAUDE_ARGS` | dispatcher | Extra flags for each launched `claude`, e.g. `"--permission-mode plan"` |
+| `REMOTE_CONTROL` | dispatcher | `1` (default) starts each agent with Remote Control so you can follow and steer it from the Claude app; `0` turns it off |
 | `HERDR_SESSION` | dispatcher | Named herdr session to launch into (blank = the default session) |
 
 `.env` is gitignored, so your hosts, paths and token stay out of the repo.
