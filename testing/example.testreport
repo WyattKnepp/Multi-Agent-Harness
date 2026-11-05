@@ -1,0 +1,48 @@
+══════════════════════════════════════════════════════════════════════════════
+  TEST REPORT · Workout-Tracker
+  RESULT: FAIL · 8 passed · 2 failed · 1 skipped · 11 total · 465ms
+  commit 2c971a9 on master · 2026-10-26 19:30 · npm test
+══════════════════════════════════════════════════════════════════════════════
+
+FAILURES (2)
+  ✗ api: workouts › rejects a workout with no exercises
+  ✗ api: personal records › converts kg to lb for display
+
+──────────────────────────────────────────────────────────────────────────────
+▶ api: workouts                         3 passed · 1 failed · 0 skipped · 62ms
+──────────────────────────────────────────────────────────────────────────────
+  ✓ PASS  creates a workout and returns its id                            32ms
+  ✓ PASS  lists workouts newest first                                     13ms
+  ✗ FAIL  rejects a workout with no exercises                             10ms
+          │ Expected values to be strictly equal:
+          │ expected  400
+          │ actual    500
+          │ at        test/api.test.js:7
+  ✓ PASS  deletes a workout                                                7ms
+
+──────────────────────────────────────────────────────────────────────────────
+▶ api: personal records                 2 passed · 1 failed · 0 skipped · 26ms
+──────────────────────────────────────────────────────────────────────────────
+  ✓ PASS  tracks a new bench press PR                                     18ms
+  ✓ PASS  ignores warm-up sets                                             5ms
+  ✗ FAIL  converts kg to lb for display                                    3ms
+          │ Expected values to be strictly deep-equal:
+          │ expected  { lb: 220.46 }
+          │ actual    { lb: 220.5 }
+          │ at        test/api.test.js:13
+
+──────────────────────────────────────────────────────────────────────────────
+▶ data file                             1 passed · 0 failed · 1 skipped · 45ms
+──────────────────────────────────────────────────────────────────────────────
+  ✓ PASS  survives a restart                                              45ms
+  ○ SKIP  migrates the old format  (no old data on this machine)
+
+──────────────────────────────────────────────────────────────────────────────
+▶ ui: main page                        2 passed · 0 failed · 0 skipped · 332ms
+──────────────────────────────────────────────────────────────────────────────
+  ✓ PASS  loads without console errors                                   121ms
+  ✓ PASS  logs a set from the quick-add box                              211ms
+
+══════════════════════════════════════════════════════════════════════════════
+  END · FAIL · 8 passed · 2 failed · 1 skipped
+══════════════════════════════════════════════════════════════════════════════

@@ -1,0 +1,38 @@
+{
+  "_comment": "Copy to projects.deploy.json (gitignored). One entry per project, keyed by its folder name in PROJECTS_DIR. `make new` writes entries for new projects; add entries by hand for apps you already host. A project with no entry (or enabled: false) is skipped by `make deploy`. Keys starting with _ are ignored. Every field is optional.",
+  "_fields": {
+    "enabled": "false = never deploy this project (default true)",
+    "port": "port the app listens on (127.0.0.1); used for PORT, the health check and the Caddy site",
+    "pm2Name": "pm2 app name (default: the project name; null = no pm2 app)",
+    "dropletDir": "the clone on the droplet (default: DROPLET_PROJECTS_DIR/<project>)",
+    "subdomain": "served at <subdomain>.BASE_DOMAIN (default: lowercased project name; null = no Caddy site)",
+    "healthPath": "path for the HTTP health check (default /); any status below 500 passes",
+    "build": "shell command replacing the default `npm install` + `npm run build`; \"\" = no build step",
+    "start": "command pm2 runs on the first deploy (default `npm start`), with PORT and HOST=127.0.0.1",
+    "deploy": "shell command replacing build AND (re)start; runs in dropletDir as APP_USER after the pull. The health check still runs.",
+    "created": "set by make new; make remove only deletes projects that have it",
+    "notes": "free text for you"
+  },
+  "my-new-app": {
+    "port": 3100,
+    "pm2Name": "my-new-app",
+    "dropletDir": "/home/www/my-new-app",
+    "subdomain": "my-new-app",
+    "created": "2026-01-01"
+  },
+  "existing-python-app": {
+    "port": 3102,
+    "pm2Name": "python-app",
+    "dropletDir": "/home/www/python-app",
+    "subdomain": "py",
+    "build": "",
+    "notes": "already running under pm2; deploy = pull + pm2 restart"
+  },
+  "custom-app": {
+    "port": 3101,
+    "deploy": "docker compose up -d --build"
+  },
+  "this-pipeline": {
+    "enabled": false
+  }
+}

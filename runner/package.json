@@ -1,0 +1,6 @@
+{
+  "name": "droplet-runner",
+  "private": true,
+  "description": "Builds approved change jobs on the droplet with headless Claude Code (no dependencies)",
+  "scripts": { "start": "node runner.js", "test": "node --test tests/" }
+}

@@ -1,0 +1,9 @@
+node_modules/
+server/data/
+.env
+config.env
+projects.deploy.json
+runner/tests/.tmp-*
+.test-results.xml
+*.testreport
+!testing/example.testreport
